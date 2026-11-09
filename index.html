@@ -1,0 +1,1098 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CutContour: SVG to Spot Color PDF</title>
+    <script src="https://cdn.jsdelivr.net/npm/pdfkit@0.20.2/js/pdfkit.standalone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/svg-to-pdfkit@0.1.8/source.js"></script>
+    <style>
+      section {
+        margin: 1em 0;
+      }
+      /* Preview: the artwork and the cut overlay share one positioned box. */
+      /* The stage is sized at real scale, so scroll rather than shrink large artwork. */
+      #viewport {
+        overflow: auto;
+      }
+      #stage {
+        position: relative;
+      }
+      #art {
+        position: absolute;
+        inset: 0;
+      }
+      #overlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        pointer-events: none;
+      }
+      #overlay .ant-bg {
+        fill: none;
+        stroke: #fff;
+        stroke-width: 3.5;
+        vector-effect: non-scaling-stroke;
+        stroke-linejoin: round;
+      }
+      #overlay .ant {
+        fill: none;
+        stroke: #ff00ff;
+        stroke-width: 0.75;
+        vector-effect: non-scaling-stroke;
+        stroke-dasharray: 6 4;
+        stroke-linejoin: round;
+        animation: march 0.5s linear infinite;
+      }
+      @keyframes march {
+        to {
+          stroke-dashoffset: -10;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #overlay .ant {
+          animation: none;
+        }
+      }
+      /* Legend swatches for the overlay. */
+      .legend i {
+        display: inline-block;
+        width: 48px;
+        border-top: 2px dashed #ff00ff;
+        vertical-align: middle;
+        margin-right: 5px;
+      }
+      label {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>CutContour: SVG to Spot Color PDF</h1>
+      <p>
+        Recolors hairline strokes in an SVG to a <code>CutContour</code> spot color and exports a
+        PDF for Roland VersaWorks.
+      </p>
+    </header>
+
+    <main>
+      <div>
+        <section class="card">
+          <h2>Input</h2>
+          <div id="drop" tabindex="0" role="button" aria-label="Choose an SVG file">
+            <strong>Drop an SVG here</strong><br />or click to choose a file
+            <div id="fileName"></div>
+          </div>
+          <input type="file" id="file" accept=".svg,image/svg+xml" hidden />
+          <p>
+            <label for="paste">Or paste SVG markup</label><br />
+            <textarea
+              id="paste"
+              rows="4"
+              cols="36"
+              spellcheck="false"
+              placeholder='<svg xmlns="http://www.w3.org/2000/svg" …>…</svg>'
+            ></textarea>
+          </p>
+          <p>No file handy? <button class="link" id="sample">Load a sample</button></p>
+        </section>
+
+        <section class="card">
+          <h2>Options</h2>
+          <div class="row">
+            <label class="field"
+              ><span>Stroke color to match <code>--from</code></span>
+              <div class="color-pair">
+                <input
+                  type="color"
+                  id="fromPicker"
+                  value="#ff00ff"
+                  aria-label="Pick stroke color"
+                />
+                <input type="text" id="from" value="#FF00FF" spellcheck="false" />
+              </div>
+            </label>
+            <label class="field"
+              ><span>RGB tolerance <code>--tolerance</code></span>
+              <input type="number" id="tolerance" value="8" min="0" max="255" step="1" />
+            </label>
+          </div>
+          <div class="row">
+            <label class="field"
+              ><span>Max width, pt <code>--max-width</code></span>
+              <input type="number" id="maxWidth" value="0.3" min="0" step="0.05" />
+            </label>
+            <label class="field"
+              ><span>PDF version <code>--pdf-version</code></span>
+              <select id="pdfVersion">
+                <option>1.3</option>
+                <option selected>1.4</option>
+                <option>1.5</option>
+                <option>1.6</option>
+                <option>1.7</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
+            <label class="field"
+              ><span>Spot name <code>--spot-name</code></span>
+              <input type="text" id="spotName" value="CutContour" spellcheck="false" />
+            </label>
+            <label class="field"
+              ><span>Fallback CMYK <code>--spot-cmyk</code></span>
+              <input type="text" id="spotCmyk" value="0 100 0 0" spellcheck="false" />
+            </label>
+          </div>
+          <label class="check"
+            ><input type="checkbox" id="assumePt" />
+            <span
+              >1 SVG px = 1 pt
+              <small
+                >Applies only to px and unitless sizes. Turn on for Illustrator exports (72 ppi).
+                Off uses the CSS standard, 96 px per inch. Sizes in pt, in, mm, cm and pc are always
+                used as written.</small
+              ></span
+            >
+          </label>
+          <label class="check"
+            ><input type="checkbox" id="includeFilled" />
+            <span
+              >Also recolor strokes on filled paths
+              <small
+                >Off by default. These are skipped and reported because VersaWorks may cut them
+                twice.</small
+              ></span
+            >
+          </label>
+        </section>
+
+        <section class="card">
+          <h2>Export</h2>
+          <button class="primary" id="export" disabled>Export PDF</button>
+          <div id="exportStatus"></div>
+        </section>
+      </div>
+
+      <div>
+        <section class="card">
+          <div class="preview-bar">
+            <div>
+              <div class="count" id="count">0 <small>cut paths</small></div>
+              <div class="pagesize" id="pageSize"></div>
+            </div>
+            <div class="legend">
+              <span><i></i>will be cut</span>
+            </div>
+          </div>
+          <div class="viewport" id="viewport">
+            <div class="empty" id="empty">Load an SVG to preview where the cut lines will go.</div>
+            <div id="stage" hidden>
+              <div id="art"></div>
+              <svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"></svg>
+            </div>
+          </div>
+          <ul class="issues" id="issues"></ul>
+        </section>
+      </div>
+    </main>
+
+    <footer>
+      <h1>About</h1>
+      <ul>
+        <li>
+          The preview is a visual check only. VersaWorks still decides what gets cut. Open the PDF
+          in Acrobat (Output Preview → Separations) to confirm the <code>CutContour</code> plate,
+          then check that the path shows as a solid magenta line in the VersaWorks layout window.
+        </li>
+        <li>Files never leave your browser.</li>
+        <li>
+          <a href="https://github.com/forresto/svg-to-cutcontour-pdf">Source</a>, by
+          <a href="https://cuttle.xyz/@forresto">cuttle.xyz/@forresto</a>
+        </li>
+      </ul>
+    </footer>
+
+    <script>
+      "use strict";
+
+      const NS = "http://www.w3.org/2000/svg";
+      const SENTINEL = "cutcontour-spot";
+      const SHAPES = "path,line,polyline,polygon,rect,circle,ellipse";
+      const NOT_RENDERED =
+        "defs,clipPath,mask,pattern,symbol,marker,linearGradient,radialGradient,filter";
+      const GEOMETRY = {
+        path: ["d"],
+        line: ["x1", "y1", "x2", "y2"],
+        polyline: ["points"],
+        polygon: ["points"],
+        rect: ["x", "y", "width", "height", "rx", "ry"],
+        circle: ["cx", "cy", "r"],
+        ellipse: ["cx", "cy", "rx", "ry"],
+      };
+
+      const $ = (s) => document.querySelector(s);
+      const state = { name: null, source: null, prep: null, analysis: null };
+
+      /* ---------- helpers ---------- */
+
+      const fmt = (n, d = 3) => Number(n.toFixed(d)).toString();
+      const esc = (s) =>
+        String(s).replace(
+          /[&<>"']/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+        );
+
+      function parseHex(hex) {
+        const m = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(hex.trim());
+        if (!m) return null;
+        let h = m[1];
+        if (h.length === 3) h = h.replace(/./g, "$&$&");
+        return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+      }
+
+      function parseComputedRgb(value) {
+        const m =
+          /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/.exec(
+            value || "",
+          );
+        if (!m) return null;
+        let a = m[4] == null ? 1 : m[4].endsWith("%") ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+        return { rgb: [+m[1], +m[2], +m[3]], a };
+      }
+
+      // Absolute units are always honored (1in = 72pt, 1mm = 72/25.4pt).
+      // Only px and unitless lengths depend on the "1 SVG px = 1 pt" setting.
+      const UNIT_PT = { pt: 1, pc: 12, in: 72, mm: 72 / 25.4, cm: 72 / 2.54 };
+      function parseLength(value, pxToPt) {
+        const m = /^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*(px|pt|pc|in|mm|cm)?\s*$/i.exec(
+          value || "",
+        );
+        if (!m) return null; // missing, %, em, etc.
+        const n = parseFloat(m[1]);
+        if (!(n > 0)) return null;
+        const unit = (m[2] || "px").toLowerCase();
+        if (unit === "px") return { pt: n * pxToPt, user: n };
+        // Without a viewBox, SVG user units are CSS px (96 per inch), whatever the setting.
+        return { pt: n * UNIT_PT[unit], user: (n * UNIT_PT[unit] * 96) / 72 };
+      }
+
+      function readOptions() {
+        const errors = [];
+        const from = parseHex($("#from").value);
+        if (!from) errors.push("Stroke color must be a hex color like #FF00FF.");
+        const tolerance = Number($("#tolerance").value);
+        if (!(tolerance >= 0 && tolerance <= 255))
+          errors.push("Tolerance must be between 0 and 255.");
+        const maxWidth = Number($("#maxWidth").value);
+        if (!(maxWidth > 0)) errors.push("Max width must be greater than 0.");
+        const spotName = $("#spotName").value;
+        if (!spotName.trim()) errors.push("Spot name cannot be empty.");
+        else if (spotName !== spotName.trim())
+          errors.push(
+            "Spot name has leading or trailing spaces. VersaWorks matches the name exactly.",
+          );
+        const cmyk = $("#spotCmyk")
+          .value.trim()
+          .split(/[\s,]+/)
+          .map(Number);
+        if (cmyk.length !== 4 || cmyk.some((v) => !(v >= 0 && v <= 100)))
+          errors.push('Fallback CMYK must be four numbers from 0 to 100, like "0 100 0 0".');
+        return {
+          from,
+          tolerance,
+          maxWidth,
+          spotName,
+          cmyk,
+          errors,
+          pdfVersion: $("#pdfVersion").value,
+          assumePt: $("#assumePt").checked,
+          includeFilled: $("#includeFilled").checked,
+        };
+      }
+
+      /* ---------- 1. load, sanitize, normalize ---------- */
+
+      function prepare(source, assumePt) {
+        const doc = new DOMParser().parseFromString(source, "image/svg+xml");
+        const perr = doc.querySelector("parsererror");
+        if (perr)
+          throw new Error(
+            "This file is not valid SVG/XML: " + perr.textContent.trim().split("\n")[0],
+          );
+        const root = doc.documentElement;
+        if (root.localName !== "svg")
+          throw new Error("The root element is <" + root.localName + ">, not <svg>.");
+
+        // The preview renders inline, so strip anything executable.
+        doc.querySelectorAll("script, foreignObject").forEach((el) => el.remove());
+        for (const el of doc.querySelectorAll("*")) {
+          for (const attr of [...el.attributes]) {
+            if (
+              /^on/i.test(attr.name) ||
+              (/href$/i.test(attr.name) && /^\s*javascript:/i.test(attr.value))
+            )
+              el.removeAttribute(attr.name);
+          }
+        }
+
+        // Page size in pt. The export maps the root viewport onto the page exactly.
+        const pxToPt = assumePt ? 1 : 0.75;
+        const vb = (root.getAttribute("viewBox") || "")
+          .trim()
+          .split(/[\s,]+/)
+          .map(Number);
+        const hasViewBox = vb.length === 4 && vb.every(Number.isFinite) && vb[2] > 0 && vb[3] > 0;
+        const wLen = parseLength(root.getAttribute("width"), pxToPt);
+        const hLen = parseLength(root.getAttribute("height"), pxToPt);
+        let wPt = wLen && wLen.pt;
+        let hPt = hLen && hLen.pt;
+        if (wPt == null && hPt == null) {
+          if (!hasViewBox)
+            throw new Error(
+              "The SVG needs width and height attributes or a viewBox to set the page size.",
+            );
+          wPt = vb[2] * pxToPt;
+          hPt = vb[3] * pxToPt;
+        } else if (wPt == null || hPt == null) {
+          if (!hasViewBox)
+            throw new Error(
+              "The SVG has only one of width/height and no viewBox, so the page size is unknown.",
+            );
+          if (wPt == null) wPt = (hPt * vb[2]) / vb[3];
+          else hPt = (wPt * vb[3]) / vb[2];
+        }
+        // Both width and height are known here, since a missing viewBox requires them.
+        if (!hasViewBox) root.setAttribute("viewBox", `0 0 ${wLen.user} ${hLen.user}`);
+        root.setAttribute("width", String(wPt / pxToPt));
+        root.setAttribute("height", String(hPt / pxToPt));
+
+        return { text: new XMLSerializer().serializeToString(doc), wPt, hPt, pxToPt };
+      }
+
+      /* ---------- 2–3. find matching strokes ---------- */
+
+      function describe(el) {
+        const id = el.getAttribute("id");
+        return `<${el.localName}${id ? ` id="${id}"` : ""}>`;
+      }
+
+      function inheritedOpacity(el) {
+        let o = 1;
+        for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
+          const v = parseFloat(getComputedStyle(n).opacity);
+          if (Number.isFinite(v)) o *= v;
+          if (n.localName === "svg" && !(n.parentNode && n.parentNode.namespaceURI === NS)) break;
+        }
+        return o;
+      }
+
+      function pngInfo(bytes) {
+        const sig = [0x89, 0x50, 0x4e, 0x47];
+        if (!sig.every((b, i) => bytes[i] === b)) return null;
+        const colorType = bytes[25],
+          interlace = bytes[28];
+        let tRNS = false;
+        for (let i = 8; i + 8 <= bytes.length;) {
+          const len =
+            ((bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3]) >>> 0;
+          const type = String.fromCharCode(bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]);
+          if (type === "tRNS") tRNS = true;
+          if (type === "IDAT" || type === "IEND") break;
+          i += 12 + len;
+        }
+        return { alpha: colorType === 4 || colorType === 6 || tRNS, interlaced: interlace === 1 };
+      }
+
+      function checkImages(svg, issues) {
+        const images = [...svg.querySelectorAll("image")];
+        let jpeg = 0,
+          png = 0;
+        for (const img of images) {
+          const href = (
+            img.getAttribute("href") ||
+            img.getAttributeNS("http://www.w3.org/1999/xlink", "href") ||
+            ""
+          ).replace(/\s+/g, "");
+          const m = /^data:([^;,]*)(;base64)?,(.*)$/i.exec(href);
+          if (!m) {
+            issues.push({
+              level: "warn",
+              text: `${describe(img)} links to an external file (${esc(href.slice(0, 60) || "empty")}). Only images embedded as base64 data URIs are included in the PDF.`,
+            });
+            continue;
+          }
+          if (!m[2]) {
+            issues.push({
+              level: "warn",
+              text: `${describe(img)} uses a non-base64 data URI and will be missing from the PDF.`,
+            });
+            continue;
+          }
+          let bytes;
+          try {
+            bytes = Uint8Array.from(atob(m[3].slice(0, 400000)), (c) => c.charCodeAt(0));
+          } catch {
+            bytes = new Uint8Array();
+          }
+          if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+            jpeg++;
+            continue;
+          }
+          const info = pngInfo(bytes);
+          if (info) {
+            png++;
+            if (info.alpha)
+              issues.push({
+                level: "warn",
+                text: `${describe(img)} is a PNG with transparency. It will be embedded with a soft mask, which is transparency in the PDF, and its pixels get re-encoded. Flatten it to an opaque PNG or JPEG to keep it untouched.`,
+              });
+            if (info.interlaced)
+              issues.push({
+                level: "warn",
+                text: `${describe(img)} is an interlaced PNG. Re-save it without interlacing so it embeds correctly.`,
+              });
+            continue;
+          }
+          issues.push({
+            level: "warn",
+            text: `${describe(img)} is ${esc(m[1] || "an unknown type")}. Only JPEG and PNG images can be embedded.`,
+          });
+        }
+        if (jpeg || png) {
+          issues.push({
+            level: "info",
+            text: `${jpeg + png} raster image${jpeg + png === 1 ? "" : "s"} (${jpeg} JPEG, ${png} PNG) pass through with original compression. VersaWorks ignores raster data for cutting.`,
+          });
+        }
+      }
+
+      function analyze(svg, prep, opts) {
+        const shapes = [...svg.querySelectorAll(SHAPES)];
+        const ptPerScreenPx = prep.wPt / svg.getBoundingClientRect().width;
+        const matched = [],
+          issues = [];
+        const filled = [],
+          thick = [],
+          zero = [];
+
+        shapes.forEach((el, index) => {
+          if (el.closest(NOT_RENDERED)) return;
+          if (el.checkVisibility && !el.checkVisibility({ visibilityProperty: true })) return;
+          const cs = getComputedStyle(el);
+          const stroke = parseComputedRgb(cs.stroke);
+          if (!stroke) return; // none, gradient, pattern
+          if (!stroke.rgb.every((v, i) => Math.abs(v - opts.from[i]) <= opts.tolerance)) return;
+
+          const ctm = el.getScreenCTM();
+          if (!ctm) return;
+          const sw = parseFloat(cs.strokeWidth);
+          const widthPt = sw * Math.sqrt(Math.abs(ctm.a * ctm.d - ctm.b * ctm.c)) * ptPerScreenPx;
+          const fill =
+            cs.fill !== "none" &&
+            parseFloat(cs.fillOpacity) > 0 &&
+            (parseComputedRgb(cs.fill)?.a ?? 1) > 0;
+          const rec = { index, el, widthPt, label: describe(el) };
+
+          if (!(sw > 0)) {
+            zero.push(rec);
+            return;
+          }
+          if (widthPt > opts.maxWidth + 1e-6) {
+            thick.push(rec);
+            return;
+          }
+          if (fill && !opts.includeFilled) {
+            filled.push(rec);
+            return;
+          }
+
+          matched.push(rec);
+          if (fill)
+            issues.push({
+              level: "warn",
+              text: `${esc(rec.label)} is filled and has a cut stroke. VersaWorks may cut it twice.`,
+            });
+          const strokeOpacity = parseFloat(cs.strokeOpacity) * stroke.a;
+          if (strokeOpacity < 1)
+            issues.push({
+              level: "info",
+              text: `${esc(rec.label)} has stroke opacity ${fmt(strokeOpacity, 2)}. The cut stroke is written fully opaque.`,
+            });
+          const groupOpacity = inheritedOpacity(el);
+          if (groupOpacity < 1)
+            issues.push({
+              level: "warn",
+              text: `${esc(rec.label)} sits under opacity ${fmt(groupOpacity, 2)}, which adds transparency to the PDF. Set opacity to 1.`,
+            });
+          if (cs.strokeDasharray && cs.strokeDasharray !== "none")
+            issues.push({
+              level: "warn",
+              text: `${esc(rec.label)} is dashed. The dashes carry into the PDF and VersaWorks will cut them as dashes.`,
+            });
+        });
+
+        const list = (recs) =>
+          recs
+            .slice(0, 6)
+            .map((r) => `<code>${esc(r.label)}</code>`)
+            .join(", ") + (recs.length > 6 ? ` and ${recs.length - 6} more` : "");
+        if (filled.length)
+          issues.unshift({
+            level: "warn",
+            text: `${filled.length} matching stroke${filled.length === 1 ? " is" : "s are"} on a filled path and ${filled.length === 1 ? "was" : "were"} skipped, because VersaWorks may cut ${filled.length === 1 ? "it" : "them"} twice: ${list(filled)}. Remove the fill or turn on “Also recolor strokes on filled paths”.`,
+          });
+        if (thick.length)
+          issues.unshift({
+            level: "warn",
+            text: `${thick.length} matching stroke${thick.length === 1 ? " is" : "s are"} wider than ${fmt(opts.maxWidth)} pt and left untouched as decoration: ${thick
+              .map((r) => `<code>${esc(r.label)}</code> ${fmt(r.widthPt, 2)} pt`)
+              .slice(0, 6)
+              .join(", ")}${thick.length > 6 ? " …" : ""}.`,
+          });
+        if (zero.length)
+          issues.unshift({
+            level: "warn",
+            text: `${zero.length} matching stroke${zero.length === 1 ? " has" : "s have"} width 0, which SVG does not draw. Skipped: ${list(zero)}.`,
+          });
+
+        const uses = svg.querySelectorAll("use").length;
+        if (uses)
+          issues.push({
+            level: "info",
+            text: `${uses} <code>&lt;use&gt;</code> reference${uses === 1 ? "" : "s"} found. Shapes drawn through <code>&lt;use&gt;</code> are not checked or recolored. Expand them in your editor if they hold cut lines.`,
+          });
+        const strokedText = [...svg.querySelectorAll("text")].filter((t) => {
+          const s = parseComputedRgb(getComputedStyle(t).stroke);
+          return s && s.rgb.every((v, i) => Math.abs(v - opts.from[i]) <= opts.tolerance);
+        }).length;
+        if (strokedText)
+          issues.push({
+            level: "info",
+            text: `${strokedText} text element${strokedText === 1 ? " has" : "s have"} a matching stroke. Text is not recolored. Convert it to outlines to cut it.`,
+          });
+        checkImages(svg, issues);
+
+        if (!matched.length)
+          issues.unshift({
+            level: "err",
+            text: `No hairline strokes matched ${esc($("#from").value.toUpperCase())} within ±${opts.tolerance} at ${fmt(opts.maxWidth)} pt or thinner. The PDF will have no cut lines.`,
+          });
+        return { matched, issues };
+      }
+
+      /* ---------- preview ---------- */
+
+      function renderPreview(prep) {
+        const stage = $("#stage");
+        $("#empty").hidden = true;
+        stage.hidden = false;
+        // Real scale: CSS pt is 1/72 in, the same unit as the PDF page. Browsers
+        // aren't calibrated to the screen, so this is close but not exact.
+        stage.style.width = `${prep.wPt}pt`;
+        stage.style.height = `${prep.hPt}pt`;
+
+        // A shadow root keeps the artwork's own <style> rules out of this page.
+        const host = $("#art");
+        const shadow = host.shadowRoot || host.attachShadow({ mode: "open" });
+        shadow.innerHTML =
+          "<style>:host{display:block}svg{display:block;width:100%;height:100%}</style>";
+        const doc = new DOMParser().parseFromString(prep.text, "image/svg+xml");
+        const svg = document.importNode(doc.documentElement, true);
+        shadow.appendChild(svg);
+        $("#pageSize").textContent =
+          `Page ${fmt(prep.wPt, 1)} × ${fmt(prep.hPt, 1)} pt ` +
+          `(${fmt((prep.wPt * 25.4) / 72, 1)} × ${fmt((prep.hPt * 25.4) / 72, 1)} mm), ` +
+          `shown at approximately actual size at 100% browser zoom`;
+        return svg;
+      }
+
+      function drawOverlay() {
+        const overlay = $("#overlay");
+        overlay.replaceChildren();
+        const a = state.analysis;
+        if (!a) return;
+        const inv = overlay.getScreenCTM()?.inverse();
+        if (!inv) return;
+        const add = (rec, classes) => {
+          const ctm = rec.el.getScreenCTM();
+          if (!ctm) return;
+          const m = inv.multiply(ctm);
+          for (const cls of classes) {
+            const clone = document.createElementNS(NS, rec.el.localName);
+            for (const attr of GEOMETRY[rec.el.localName]) {
+              if (rec.el.hasAttribute(attr)) clone.setAttribute(attr, rec.el.getAttribute(attr));
+            }
+            clone.setAttribute("transform", `matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f})`);
+            clone.setAttribute("class", cls);
+            overlay.appendChild(clone);
+          }
+        };
+        a.matched.forEach((r) => add(r, ["ant-bg", "ant"]));
+      }
+
+      function renderReport() {
+        const a = state.analysis;
+        const n = a ? a.matched.length : 0;
+        $("#count").innerHTML = `${n} <small>cut path${n === 1 ? "" : "s"}</small>`;
+        $("#issues").innerHTML = (a ? a.issues : [])
+          .map((i) => `<li class="${i.level}">${i.text}</li>`)
+          .join("");
+        $("#export").disabled = !a || !a.matched.length;
+      }
+
+      function showError(msg) {
+        state.analysis = null;
+        renderReport();
+        $("#overlay").replaceChildren();
+        $("#issues").innerHTML = `<li class="err">${esc(msg)}</li>`;
+      }
+
+      function run() {
+        $("#exportStatus").innerHTML = "";
+        if (!state.source) return;
+        const opts = readOptions();
+        try {
+          state.prep = prepare(state.source, opts.assumePt);
+          const svg = renderPreview(state.prep);
+          if (opts.errors.length) {
+            showError(opts.errors.join(" "));
+            return;
+          }
+          state.analysis = analyze(svg, state.prep, opts);
+          renderReport();
+          drawOverlay();
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+        }
+      }
+
+      /* ---------- 4–5. export ---------- */
+
+      async function buildPdf(prep, analysis, opts) {
+        // Re-parse the untouched source. The overlay never touches this copy.
+        const doc = new DOMParser().parseFromString(prep.text, "image/svg+xml");
+        const shapes = doc.documentElement.querySelectorAll(SHAPES);
+        for (const rec of analysis.matched) {
+          const el = shapes[rec.index];
+          const style = (el.getAttribute("style") || "").trim().replace(/;?$/, ";");
+          el.setAttribute(
+            "style",
+            `${style === ";" ? "" : style}stroke:${SENTINEL};stroke-opacity:1`,
+          );
+        }
+        const svgText = new XMLSerializer().serializeToString(doc);
+
+        const pdf = new PDFDocument({
+          size: [prep.wPt, prep.hPt],
+          margin: 0,
+          pdfVersion: opts.pdfVersion,
+          info: { Title: state.name || "cutcontour", Creator: "cutcontour" },
+        });
+        pdf.addSpotColor(opts.spotName, ...opts.cmyk);
+        const chunks = [];
+        pdf.on("data", (c) => chunks.push(c));
+        const done = new Promise((resolve, reject) => {
+          pdf.on("end", resolve);
+          pdf.on("error", reject);
+        });
+
+        const warnings = [];
+        SVGtoPDF(pdf, svgText, 0, 0, {
+          width: prep.wPt,
+          height: prep.hPt,
+          assumePt: opts.assumePt,
+          colorCallback: (result, raw) =>
+            raw && raw.trim() === SENTINEL ? [opts.spotName, 1] : result,
+          warningCallback: (w) => warnings.push(w),
+        });
+        pdf.end();
+        await done;
+
+        const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+        let off = 0;
+        for (const c of chunks) {
+          bytes.set(c, off);
+          off += c.length;
+        }
+        return { bytes, warnings };
+      }
+
+      /* ---------- 6. re-open and verify ---------- */
+
+      async function inflate(data) {
+        const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate"));
+        return new Uint8Array(await new Response(stream).arrayBuffer());
+      }
+
+      function latin1(bytes) {
+        let s = "";
+        for (let i = 0; i < bytes.length; i += 0x8000)
+          s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        return s;
+      }
+
+      const decodePdfName = (n) =>
+        n.replace(/#([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+
+      function parsePdfObjects(bytes) {
+        const s = latin1(bytes);
+        const objects = [];
+        const re = /(\d+)\s+(\d+)\s+obj\b/g;
+        let m;
+        while ((m = re.exec(s))) {
+          const start = re.lastIndex;
+          const endobj = s.indexOf("endobj", start);
+          if (endobj < 0) break;
+          const streamAt = s.indexOf("stream", start);
+          if (streamAt >= 0 && streamAt < endobj) {
+            const dict = s.slice(start, streamAt);
+            let dataStart = streamAt + 6;
+            if (s[dataStart] === "\r") dataStart++;
+            if (s[dataStart] === "\n") dataStart++;
+            const lm = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(dict);
+            const len = lm ? +lm[1] : s.indexOf("endstream", dataStart) - dataStart;
+            objects.push({ num: +m[1], dict, data: bytes.subarray(dataStart, dataStart + len) });
+            re.lastIndex = Math.max(dataStart + len, start);
+          } else {
+            objects.push({ num: +m[1], dict: s.slice(start, endobj) });
+            re.lastIndex = endobj;
+          }
+        }
+        return { text: s, objects };
+      }
+
+      function countSpotStrokes(content, spotNames) {
+        const tokens =
+          content.match(
+            /\((?:\\.|[^\\)])*\)|<<|>>|<[0-9A-Fa-f\s]*>|\[|\]|\/[^\s/[\]()<>{}%]*|%[^\r\n]*|[^\s/[\]()<>{}%]+/g,
+          ) || [];
+        let cs = null,
+          lastName = null,
+          count = 0;
+        const stack = [];
+        for (const t of tokens) {
+          if (t[0] === "/") {
+            lastName = t.slice(1);
+            continue;
+          }
+          switch (t) {
+            case "q":
+              stack.push(cs);
+              break;
+            case "Q":
+              cs = stack.length ? stack.pop() : null;
+              break;
+            case "CS":
+              cs = lastName;
+              break;
+            case "G":
+            case "RG":
+            case "K":
+              cs = null;
+              break;
+            case "S":
+            case "s":
+            case "B":
+            case "B*":
+            case "b":
+            case "b*":
+              if (cs && spotNames.has(cs)) count++;
+              break;
+          }
+        }
+        return count;
+      }
+
+      async function verifyPdf(bytes, opts, expected) {
+        const errors = [];
+        const { text, objects } = parsePdfObjects(bytes);
+
+        const header = /^%PDF-(\d\.\d)/.exec(text);
+        if (!header) errors.push("The file does not start with a PDF header.");
+        else if (header[1] !== opts.pdfVersion)
+          errors.push(`Header says PDF ${header[1]}, expected ${opts.pdfVersion}.`);
+
+        // Every Separation color space and its exact (case-sensitive) name.
+        const seps = [];
+        for (const o of objects) {
+          const m = /\[\s*\/Separation\s*\/([^\s/[\]()<>{}%]+)\s*\/(\w+)/.exec(o.dict);
+          if (m)
+            seps.push({
+              num: o.num,
+              name: decodePdfName(m[1]),
+              alt: m[2],
+              c1: (/\/C1\s*\[([^\]]*)\]/.exec(o.dict) || [])[1],
+            });
+        }
+        const ours = seps.filter((s) => s.name === opts.spotName);
+        if (!ours.length) {
+          const near = seps.find((s) => s.name.toLowerCase() === opts.spotName.toLowerCase());
+          errors.push(
+            near
+              ? `Found a spot color named "${near.name}", but VersaWorks needs exactly "${opts.spotName}".`
+              : `No Separation color space named "${opts.spotName}" was found. The spot color was dropped or converted.`,
+          );
+        } else {
+          const c1 = (ours[0].c1 || "").trim().split(/\s+/).map(Number);
+          const want = opts.cmyk.map((v) => v / 100);
+          if (
+            ours[0].alt !== "DeviceCMYK" ||
+            c1.length !== 4 ||
+            c1.some((v, i) => Math.abs(v - want[i]) > 1e-3)
+          ) {
+            errors.push(
+              `The spot color's CMYK fallback is ${ours[0].alt} [${ours[0].c1 || "?"}], expected DeviceCMYK [${want.join(" ")}].`,
+            );
+          }
+        }
+
+        // Resource names (e.g. /CS0) that point at our separation, then count strokes painted with it.
+        const spotRes = new Set();
+        for (const sep of ours) {
+          const ref = new RegExp(`/([^\\s/\\[\\]()<>{}%]+)\\s+${sep.num}\\s+0\\s+R`, "g");
+          for (const o of objects) for (const m of o.dict.matchAll(ref)) spotRes.add(m[1]);
+        }
+        let strokes = 0;
+        for (const o of objects) {
+          if (
+            !o.data ||
+            /\/Subtype\s*\/Image|\/Length1|\/Subtype\s*\/(?:Type1C|CIDFontType0C|OpenType)|\/Type\s*\/Metadata|\/N\s+[134]\b/.test(
+              o.dict,
+            )
+          )
+            continue;
+          let data = o.data;
+          if (/\/FlateDecode/.test(o.dict)) {
+            try {
+              data = await inflate(data);
+            } catch {
+              continue;
+            }
+          }
+          strokes += countSpotStrokes(latin1(data), spotRes);
+        }
+        if (ours.length && strokes !== expected) {
+          errors.push(
+            `Expected ${expected} stroke${expected === 1 ? "" : "s"} in "${opts.spotName}", found ${strokes}.`,
+          );
+        }
+        return { ok: errors.length === 0, errors, strokes, version: header && header[1] };
+      }
+
+      function download(bytes, filename) {
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+        const a = Object.assign(document.createElement("a"), { href: url, download: filename });
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }
+
+      async function exportPdf() {
+        const status = $("#exportStatus");
+        const opts = readOptions();
+        if (opts.errors.length || !state.analysis) return;
+        const btn = $("#export");
+        btn.disabled = true;
+        status.innerHTML = '<div class="status busy">Building PDF…</div>';
+        try {
+          const { bytes, warnings } = await buildPdf(state.prep, state.analysis, opts);
+          const v = await verifyPdf(bytes, opts, state.analysis.matched.length);
+          const filename = (state.name || "artwork").replace(/\.svg$/i, "") + "-cut.pdf";
+          const size =
+            bytes.length > 1048576
+              ? `${fmt(bytes.length / 1048576, 1)} MB`
+              : `${fmt(bytes.length / 1024, 1)} KB`;
+          const warnHtml = warnings.length
+            ? `<ul>${[...new Set(warnings)]
+                .slice(0, 5)
+                .map((w) => `<li>${esc(w)}</li>`)
+                .join("")}</ul>`
+            : "";
+          if (v.ok) {
+            download(bytes, filename);
+            status.innerHTML = `<div class="status ok"><strong>Verified and saved ${esc(filename)}</strong> (${size}).<br>
+        PDF ${v.version}, spot color "${esc(opts.spotName)}" present, ${v.strokes} cut stroke${v.strokes === 1 ? "" : "s"}.
+        ${warnHtml ? `<br>Renderer notes:${warnHtml}` : ""}</div>`;
+          } else {
+            status.innerHTML = `<div class="status err"><strong>Verification failed. This file is not cut-ready.</strong>
+        <ul>${v.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>${warnHtml ? `Renderer notes:${warnHtml}` : ""}
+        <button class="link" id="forceDownload">Download anyway for inspection</button></div>`;
+            $("#forceDownload").onclick = () =>
+              download(bytes, filename.replace(/-cut\.pdf$/, "-UNVERIFIED.pdf"));
+          }
+        } catch (e) {
+          console.error(e);
+          status.innerHTML = `<div class="status err"><strong>Export failed:</strong> ${esc(e.message)}</div>`;
+        } finally {
+          btn.disabled = !state.analysis || !state.analysis.matched.length;
+        }
+      }
+
+      /* ---------- input ---------- */
+
+      async function loadFile(file) {
+        if (!file) return;
+        if (!/\.svg$/i.test(file.name) && file.type !== "image/svg+xml") {
+          state.source = null;
+          $("#fileName").textContent = file.name;
+          showError("Input must be an SVG file. PDF input is not supported.");
+          return;
+        }
+        $("#paste").value = "";
+        loadText(await file.text(), file.name);
+      }
+
+      function loadText(text, name) {
+        state.name = name;
+        state.source = text;
+        $("#fileName").textContent = name;
+        run();
+      }
+
+      const looksLikeSvg = (text) => /<svg[\s>]/i.test(text);
+
+      function loadPasted(text) {
+        text = text.trim();
+        if (!text) return;
+        if (!looksLikeSvg(text)) {
+          state.source = null;
+          $("#fileName").textContent = "pasted text";
+          showError("The pasted text has no <svg> element.");
+          return;
+        }
+        loadText(text, "pasted.svg");
+      }
+
+      function sampleSvg() {
+        const c = document.createElement("canvas");
+        c.width = c.height = 220;
+        const g = c.getContext("2d");
+        const grad = g.createRadialGradient(80, 70, 10, 110, 110, 150);
+        grad.addColorStop(0, "#ffe08a");
+        grad.addColorStop(0.5, "#ff7a59");
+        grad.addColorStop(1, "#5b2a86");
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 220, 220);
+        g.fillStyle = "#fff";
+        g.font = "bold 44px system-ui, sans-serif";
+        g.textAlign = "center";
+        g.fillText("JPEG", 110, 125);
+        const jpeg = c.toDataURL("image/jpeg", 0.92);
+        return `<svg xmlns="http://www.w3.org/2000/svg" width="4in" height="3in" viewBox="0 0 288 216">
+  <rect width="288" height="216" fill="#fbf7ef"/>
+  <image id="photo" href="${jpeg}" x="22" y="22" width="110" height="110"/>
+  <circle id="photo-cut" cx="77" cy="77" r="60" fill="none" stroke="#FF00FF" stroke-width="0.25"/>
+  <path id="badge" d="M160 28 h104 v70 h-104 z" fill="#ffd34d" stroke="#fe03fe" stroke-width="0.2"/>
+  <text x="212" y="70" font-family="Helvetica" font-size="18" text-anchor="middle" fill="#3b2f00">BADGE</text>
+  <rect id="frame" x="156" y="116" width="112" height="76" rx="12" fill="none" stroke="magenta" stroke-width="2"/>
+  <g transform="translate(212 154) scale(0.5)">
+    <path id="star-cut" d="M0 -60 L17.6 -24.3 L57 -18.5 L28.5 9.3 L35.3 48.5 L0 30 L-35.3 48.5 L-28.5 9.3 L-57 -18.5 L-17.6 -24.3 Z"
+      fill="none" stroke="rgb(255, 2, 253)" stroke-width="0.4"/>
+  </g>
+  <rect x="22" y="150" width="110" height="44" rx="22" fill="none" stroke="#0057ff" stroke-width="0.25"/>
+  <text x="77" y="177" font-family="Helvetica" font-size="12" text-anchor="middle" fill="#0057ff">blue, ignored</text>
+</svg>`;
+      }
+
+      const drop = $("#drop");
+      drop.addEventListener("click", () => $("#file").click());
+      drop.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          $("#file").click();
+        }
+      });
+      $("#file").addEventListener("change", (e) => loadFile(e.target.files[0]));
+      ["dragenter", "dragover"].forEach((t) =>
+        drop.addEventListener(t, (e) => {
+          e.preventDefault();
+          drop.classList.add("over");
+        }),
+      );
+      ["dragleave", "drop"].forEach((t) =>
+        drop.addEventListener(t, (e) => {
+          e.preventDefault();
+          drop.classList.remove("over");
+        }),
+      );
+      drop.addEventListener("drop", (e) => loadFile(e.dataTransfer.files[0]));
+      document.addEventListener("dragover", (e) => e.preventDefault());
+      document.addEventListener("drop", (e) => {
+        e.preventDefault();
+        if (e.target !== drop && !drop.contains(e.target)) loadFile(e.dataTransfer.files[0]);
+      });
+
+      // Paste: into the box (loads as you type or paste), or anywhere outside a form field.
+      let pasteTimer;
+      $("#paste").addEventListener("input", (e) => {
+        clearTimeout(pasteTimer);
+        pasteTimer = setTimeout(() => loadPasted(e.target.value), 300);
+      });
+      document.addEventListener("paste", (e) => {
+        if (e.target.closest && e.target.closest("input, textarea, select, [contenteditable]"))
+          return;
+        const file = [...e.clipboardData.files].find(
+          (f) => /\.svg$/i.test(f.name) || f.type === "image/svg+xml",
+        );
+        if (file) {
+          e.preventDefault();
+          loadFile(file);
+          return;
+        }
+        const text =
+          e.clipboardData.getData("image/svg+xml") || e.clipboardData.getData("text/plain");
+        if (looksLikeSvg(text)) {
+          e.preventDefault();
+          $("#paste").value = text;
+          loadPasted(text);
+        }
+      });
+
+      $("#sample").addEventListener("click", () => {
+        $("#paste").value = "";
+        loadText(sampleSvg(), "sample.svg");
+      });
+
+      let timer;
+      const rerun = () => {
+        clearTimeout(timer);
+        timer = setTimeout(run, 150);
+      };
+      $("#from").addEventListener("input", () => {
+        const rgb = parseHex($("#from").value);
+        if (rgb)
+          $("#fromPicker").value = "#" + rgb.map((v) => v.toString(16).padStart(2, "0")).join("");
+        rerun();
+      });
+      $("#fromPicker").addEventListener("input", () => {
+        $("#from").value = $("#fromPicker").value.toUpperCase();
+        rerun();
+      });
+      [
+        "tolerance",
+        "maxWidth",
+        "spotName",
+        "spotCmyk",
+        "pdfVersion",
+        "assumePt",
+        "includeFilled",
+      ].forEach((id) => {
+        $("#" + id).addEventListener("input", rerun);
+        $("#" + id).addEventListener("change", rerun);
+      });
+      $("#export").addEventListener("click", exportPdf);
+      new ResizeObserver(() => drawOverlay()).observe($("#stage"));
+
+      if (typeof PDFDocument === "undefined" || typeof SVGtoPDF === "undefined") {
+        showError(
+          "Could not load PDFKit or svg-to-pdfkit from the CDN. Check your connection and reload.",
+        );
+      }
+    </script>
+  </body>
+</html>
